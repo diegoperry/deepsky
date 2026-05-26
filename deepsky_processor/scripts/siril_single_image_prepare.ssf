@@ -1,0 +1,3 @@
+# DeepSky single-image Siril preparation script.
+# This template is copied into a temporary web job and filled with paths.
+requires 1.2.0

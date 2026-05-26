@@ -1,0 +1,5 @@
+# Siril preprocessing script entry point for the first DeepSky worker step.
+#
+# This script is intentionally conservative: it starts Siril and exits cleanly.
+# Real calibration/registration/stacking commands will be added only after the
+# project has a test data layout and confirmed dark/flat/bias/light folders.

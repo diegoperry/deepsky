@@ -1,0 +1,11 @@
+numpy
+opencv-python
+einops
+fastapi
+python-multipart
+pytest
+redis
+rq
+timm
+torch
+uvicorn

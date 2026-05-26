@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# DeepSky runtime output
+deepsky_processor/jobs/*
+!deepsky_processor/jobs/.gitkeep
+astroboost_processor/jobs/*
+!astroboost_processor/jobs/.gitkeep
+
+# Large local tool/model assets
+models/
+tools/
+
+# Local Docker/Codex state
+.docker-codex/
+.docker-info-check.txt
+
+# Logs
+*.log
+.uvicorn.*.log
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

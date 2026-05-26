@@ -1,0 +1,45 @@
+services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    environment:
+      DEEPSKY_WEB_PROCESSOR: queue
+      REDIS_URL: redis://redis:6379/0
+      DEEPSKY_QUEUE_NAME: deepsky
+      DEEPSKY_WEB_JOB_MAX_AGE_SECONDS: 3600
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./deepsky_processor/jobs/web-requests:/app/deepsky_processor/jobs/web-requests
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    command: ["rq", "worker", "deepsky", "--url", "redis://redis:6379/0"]
+    environment:
+      DEEPSKY_VERIFY_MODE: container
+      DEEPSKY_REQUIRE_CUDA: "0"
+      USE_XVFB: "1"
+      STARNET_PATH: /app/tools/StarNet/linux/StarNetv2CLI_linux/starnet++
+      STARNET_ARGS: "{input} {output} 256"
+      SCUNET_MODEL_PATH: /app/models/SCUNet/scunet_color_real_gan.pth
+      SCUNET_MODEL_TYPE: official
+      SCUNET_DEVICE: cpu
+      REDIS_URL: redis://redis:6379/0
+      DEEPSKY_QUEUE_NAME: deepsky
+      DEEPSKY_WORKER_TIMEOUT_SECONDS: 1800
+    volumes:
+      - .:/app
+      - ./deepsky_processor/jobs/web-requests:/app/deepsky_processor/jobs/web-requests
+    depends_on:
+      - redis
+    restart: unless-stopped

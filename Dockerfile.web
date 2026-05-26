@@ -1,0 +1,24 @@
+FROM python:3.12-slim
+
+ENV PYTHONUNBUFFERED=1
+ENV DEEPSKY_WEB_PROCESSOR=queue
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libglib2.0-0 \
+    libgl1 \
+    libtiff6 \
+    libjpeg62-turbo \
+    libpng16-16 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY deepsky_processor/requirements.txt /tmp/deepsky-requirements.txt
+RUN python -m pip install --no-cache-dir --upgrade pip \
+    && python -m pip install --no-cache-dir -r /tmp/deepsky-requirements.txt
+
+COPY deepsky_processor /app/deepsky_processor
+
+EXPOSE 8000
+
+CMD ["python", "-m", "uvicorn", "deepsky_processor.web.app:app", "--host", "0.0.0.0", "--port", "8000"]

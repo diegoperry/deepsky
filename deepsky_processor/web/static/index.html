@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>DeepSky</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="hero" aria-labelledby="pageTitle">
+        <div class="badge">
+          <span class="badge-dot"></span>
+          DeepSky Astrophotography Pipeline v1.0
+        </div>
+        <h1 id="pageTitle">Process the <span>Cosmos</span></h1>
+        <p>
+          Automated, worker-backed processing for deep-sky imagers. Drop your FITS
+          or TIFF files and let the local pipeline reveal the universe.
+        </p>
+      </section>
+
+      <section class="workspace" aria-label="DeepSky image processor">
+        <div class="controls">
+          <form id="uploadForm" class="upload-form">
+            <label class="drop-zone" for="fileInput" id="dropZone">
+              <input
+                id="fileInput"
+                name="file"
+                type="file"
+              />
+              <span class="drop-icon" aria-hidden="true">+</span>
+              <span class="drop-title">Drag & drop your astrophotography file</span>
+              <span class="drop-meta" id="fileMeta">Supports FITS and TIFF formats. Maximum file size: 500MB</span>
+            </label>
+
+            <button class="primary" type="submit" id="processButton">
+              Process
+            </button>
+          </form>
+
+          <div class="status" id="status" role="status">No image loaded</div>
+
+          <section class="progress-panel" id="progressPanel" aria-label="Pipeline progress" hidden>
+            <div class="progress-header">
+              <span id="progressStep">Waiting</span>
+              <strong id="progressPercent">0%</strong>
+            </div>
+            <div class="progress-track" aria-hidden="true">
+              <div class="progress-fill" id="progressFill"></div>
+            </div>
+            <ol class="step-list" id="stepList">
+              <li data-step="0">Upload received</li>
+              <li data-step="1">Siril FITS preparation</li>
+              <li data-step="2">OpenNGC target profile</li>
+              <li data-step="3">StarNet++ star separation</li>
+              <li data-step="4">SCUNet denoise</li>
+              <li data-step="5">OpenCV color and stretch</li>
+              <li data-step="6">Final PNG export</li>
+            </ol>
+          </section>
+        </div>
+
+        <div class="preview">
+          <div class="preview-toolbar">
+            <div>
+              <p class="eyebrow">Preview</p>
+              <h2 id="previewTitle">Processed result</h2>
+            </div>
+            <a class="download disabled" id="downloadLink" aria-disabled="true">
+              Download
+            </a>
+          </div>
+          <div class="image-stage" id="imageStage">
+            <div class="empty-state" id="emptyState">
+              <span>Upload FITS or 16-bit TIFF to run the temporary worker pipeline.</span>
+            </div>
+            <img id="resultImage" alt="Processed astronomy image preview" hidden />
+          </div>
+        </div>
+      </section>
+    </main>
+    <script src="/app.js"></script>
+  </body>
+</html>
