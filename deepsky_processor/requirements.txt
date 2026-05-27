@@ -1,4 +1,5 @@
 numpy
+onnxruntime
 opencv-python
 einops
 fastapi

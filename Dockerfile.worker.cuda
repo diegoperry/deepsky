@@ -39,6 +39,7 @@ RUN python3 -m venv /opt/deepsky-venv
 ENV PATH="/opt/deepsky-venv/bin:${PATH}"
 RUN python -m pip install --no-cache-dir \
     numpy \
+    onnxruntime-gpu \
     einops \
     opencv-python-headless \
     pytest \
