@@ -1,0 +1,25 @@
+name: Sync to Replit
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Notify Replit to pull latest files
+        env:
+          SYNC_SECRET: ${{ secrets.SYNC_SECRET }}
+          REPLIT_URL: https://0128db76-e0bc-4e57-9505-d1d44eb323e6-00-cis2munl1ey6.picard.replit.dev
+        run: |
+          PAYLOAD='{"ref":"main","repo":"diegoperry/deepsky"}'
+          SIG=$(echo -n "$PAYLOAD" | openssl dgst -sha256 -hmac "$SYNC_SECRET" | awk '{print "sha256="$2}')
+          curl -sf \
+            -X POST \
+            -H "Content-Type: application/json" \
+            -H "X-Hub-Signature-256: $SIG" \
+            -d "$PAYLOAD" \
+            "$REPLIT_URL/processor/sync"
+          echo "Sync triggered."
