@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 import types
+from io import BytesIO
 
 import pytest
 
@@ -85,3 +86,38 @@ def test_r2_upload_passes_bucket_separately(monkeypatch):
     assert captured["Bucket"] == "deepsky"
     assert captured["Key"] == "railway/web-123/input/galaxy.tif"
     assert captured["Body"] == b"image"
+
+
+def test_r2_worker_backend_uses_private_worker_endpoint(monkeypatch):
+    requests = []
+
+    class FakeResponse(BytesIO):
+        pass
+
+    def fake_http_request(request, timeout):
+        requests.append(
+            {
+                "method": request.get_method(),
+                "url": request.full_url,
+                "headers": dict(request.header_items()),
+                "body": request.data,
+                "timeout": timeout,
+            }
+        )
+        return FakeResponse(b"stored")
+
+    monkeypatch.setenv("DEEPSKY_STORAGE_BACKEND", "r2_worker")
+    monkeypatch.setenv("R2_WORKER_URL", " https://deepsky-r2.example.workers.dev/ ")
+    monkeypatch.setenv("R2_WORKER_TOKEN", " secret-token ")
+    monkeypatch.setattr(storage, "_http_request", fake_http_request)
+
+    storage.upload_bytes("railway/web-123/input/galaxy.tif", b"image", "image/tiff")
+    content = storage.read_bytes("railway/web-123/input/galaxy.tif")
+
+    assert content == b"stored"
+    assert requests[0]["method"] == "PUT"
+    assert requests[0]["url"] == "https://deepsky-r2.example.workers.dev/objects/railway/web-123/input/galaxy.tif"
+    assert requests[0]["headers"]["Authorization"] == "Bearer secret-token"
+    assert requests[0]["headers"]["Content-type"] == "image/tiff"
+    assert requests[0]["body"] == b"image"
+    assert requests[1]["method"] == "GET"

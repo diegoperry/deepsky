@@ -329,7 +329,7 @@ def _content_type_for(filename: str) -> str:
 
 
 def _cleanup_expired_jobs() -> None:
-    if storage.backend_name() == "r2":
+    if storage.backend_name() != "local":
         return
     root = WEB_JOBS_ROOT
     if not root.is_dir():

@@ -6,7 +6,9 @@ import json
 import os
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.error import HTTPError
+from urllib.parse import quote, urlparse
+from urllib.request import Request, urlopen
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -22,6 +24,8 @@ def backend_name() -> str:
     configured = os.environ.get("DEEPSKY_STORAGE_BACKEND")
     if configured:
         return configured.lower()
+    if os.environ.get("R2_WORKER_URL") and os.environ.get("R2_WORKER_TOKEN"):
+        return "r2_worker"
     if os.environ.get("R2_BUCKET") and os.environ.get("R2_ENDPOINT_URL"):
         return "r2"
     return "local"
@@ -46,6 +50,12 @@ def upload_bytes(key: str, content: bytes, content_type: str | None = None) -> N
             kwargs["ContentType"] = extra_args["ContentType"]
         _s3().put_object(**kwargs)
         return
+    if _is_r2_worker_backend():
+        headers = {}
+        if content_type:
+            headers["Content-Type"] = content_type
+        _worker_request("PUT", key, body=content, headers=headers)
+        return
 
     path = _local_path(key)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -60,6 +70,9 @@ def upload_file(key: str, source_path: Path, content_type: str | None = None) ->
         else:
             _s3().upload_file(str(source_path), _bucket(), key)
         return
+    if _is_r2_worker_backend():
+        upload_bytes(key, source_path.read_bytes(), content_type=content_type)
+        return
 
     path = _local_path(key)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -71,12 +84,17 @@ def download_file(key: str, destination_path: Path) -> None:
     if backend_name() == "r2":
         _s3().download_file(_bucket(), key, str(destination_path))
         return
+    if _is_r2_worker_backend():
+        destination_path.write_bytes(read_bytes(key))
+        return
     destination_path.write_bytes(_local_path(key).read_bytes())
 
 
 def read_bytes(key: str) -> bytes:
     if backend_name() == "r2":
         return _s3().get_object(Bucket=_bucket(), Key=key)["Body"].read()
+    if _is_r2_worker_backend():
+        return _worker_request("GET", key).read()
     return _local_path(key).read_bytes()
 
 
@@ -101,6 +119,12 @@ def exists(key: str) -> bool:
                 return False
             raise
         return True
+    if _is_r2_worker_backend():
+        try:
+            _worker_request("HEAD", key)
+        except FileNotFoundError:
+            return False
+        return True
     return _local_path(key).is_file()
 
 
@@ -115,6 +139,14 @@ def delete_prefix(prefix: str) -> None:
             if objects:
                 client.delete_objects(Bucket=bucket, Delete={"Objects": objects})
         return
+    if _is_r2_worker_backend():
+        _worker_request(
+            "POST",
+            "_delete-prefix",
+            body=json.dumps({"prefix": f"{prefix}/"}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+        )
+        return
 
     root = _local_path(prefix)
     if root.is_dir():
@@ -126,6 +158,9 @@ def delete_prefix(prefix: str) -> None:
 def delete_object(key: str) -> None:
     if backend_name() == "r2":
         _s3().delete_object(Bucket=_bucket(), Key=key)
+        return
+    if _is_r2_worker_backend():
+        _worker_request("DELETE", key)
         return
 
     path = _local_path(key)
@@ -147,6 +182,25 @@ def storage_diagnostics(run_smoke: bool = False) -> dict[str, Any]:
     }
 
     if backend != "r2":
+        if _is_r2_worker_backend():
+            try:
+                worker_url = _worker_url()
+                result["endpoint_host"] = urlparse(worker_url).netloc
+                list_key = "_list"
+                _worker_request("GET", list_key)
+                result["list_test"] = "PASS"
+                smoke = r2_smoke_test(delete_after=True) if run_smoke else None
+                if smoke:
+                    result["head_test"] = smoke["status"]
+                    result["smoke_test"] = smoke["status"]
+                    result["ok"] = smoke["ok"]
+                    result["error"] = smoke["error"]
+                else:
+                    result["head_test"] = "not run"
+            except Exception as exc:  # noqa: BLE001 - startup diagnostics should report all failures.
+                result["ok"] = False
+                result["error"] = f"{type(exc).__name__}: {exc}"
+            return result
         result["local_root"] = str(LOCAL_STORAGE_ROOT)
         return result
 
@@ -188,6 +242,11 @@ def print_storage_doctor(run_smoke: bool = False) -> bool:
         print(f"R2 list test: {result['list_test']}")
         print(f"R2 head test: {result['head_test']}")
         print(f"R2 smoke test: {result['smoke_test']}")
+    elif _is_r2_worker_backend():
+        print(f"R2 Worker host: {result.get('endpoint_host') or '<not configured>'}")
+        print(f"R2 Worker list test: {result['list_test']}")
+        print(f"R2 Worker head test: {result['head_test']}")
+        print(f"R2 Worker smoke test: {result['smoke_test']}")
     else:
         print(f"Local storage root: {result.get('local_root')}")
 
@@ -200,19 +259,22 @@ def print_storage_doctor(run_smoke: bool = False) -> bool:
 
 
 def r2_smoke_test(delete_after: bool = True) -> dict[str, Any]:
-    if backend_name() != "r2":
+    if backend_name() != "r2" and not _is_r2_worker_backend():
         return {
             "ok": False,
             "status": "FAIL",
             "key": None,
-            "error": "R2 smoke test requires DEEPSKY_STORAGE_BACKEND=r2",
+            "error": "R2 smoke test requires DEEPSKY_STORAGE_BACKEND=r2 or r2_worker",
         }
 
     key = "/".join(segment for segment in (object_prefix(), "_healthcheck.txt") if segment)
     payload = b"deepsky-r2-healthcheck\n"
     try:
         upload_bytes(key, payload, content_type="text/plain")
-        _s3().head_object(Bucket=_bucket(), Key=key)
+        if backend_name() == "r2":
+            _s3().head_object(Bucket=_bucket(), Key=key)
+        else:
+            _worker_request("HEAD", key)
         downloaded = read_bytes(key)
         if downloaded != payload:
             raise RuntimeError("R2 smoke test read-back content did not match")
@@ -235,6 +297,55 @@ def _local_path(key: str) -> Path:
     if root != path and root not in path.parents:
         raise ValueError(f"Refusing to access storage path outside root: {key}")
     return path
+
+
+def _is_r2_worker_backend() -> bool:
+    return backend_name() in {"r2_worker", "r2-worker", "r2_proxy", "r2-proxy"}
+
+
+def _worker_request(
+    method: str,
+    key: str,
+    body: bytes | None = None,
+    headers: dict[str, str] | None = None,
+):
+    request_headers = {"Authorization": f"Bearer {_required_env('R2_WORKER_TOKEN')}"}
+    if headers:
+        request_headers.update(headers)
+    request = Request(
+        _worker_object_url(key),
+        data=body,
+        headers=request_headers,
+        method=method,
+    )
+    try:
+        return _http_request(request, timeout=120)
+    except HTTPError as exc:
+        if exc.code == 404:
+            raise FileNotFoundError(key) from exc
+        raise RuntimeError(f"R2 Worker request failed with HTTP {exc.code}: {key}") from exc
+
+
+def _http_request(request: Request, timeout: int = 120):
+    return urlopen(request, timeout=timeout)
+
+
+def _worker_object_url(key: str) -> str:
+    base_url = _worker_url()
+    if key == "_list":
+        prefix = quote(object_prefix(), safe="/")
+        return f"{base_url}/list?prefix={prefix}"
+    if key == "_delete-prefix":
+        return f"{base_url}/delete-prefix"
+    return f"{base_url}/objects/{quote(key.strip('/'), safe='/')}"
+
+
+def _worker_url() -> str:
+    value = _required_env("R2_WORKER_URL").rstrip("/")
+    parsed = urlparse(value)
+    if not parsed.scheme or not parsed.netloc:
+        raise RuntimeError("R2_WORKER_URL must be a full https:// URL")
+    return value
 
 
 def _s3():

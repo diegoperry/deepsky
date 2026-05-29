@@ -43,11 +43,9 @@ DEEPSKY_WEB_PROCESSOR=queue
 REDIS_URL=<Railway Redis private URL>
 DEEPSKY_QUEUE_NAME=deepsky
 DEEPSKY_WEB_JOB_MAX_AGE_SECONDS=3600
-DEEPSKY_STORAGE_BACKEND=r2
-R2_BUCKET=<Cloudflare R2 bucket name>
-R2_ENDPOINT_URL=https://<account-id>.r2.cloudflarestorage.com
-R2_ACCESS_KEY_ID=<R2 access key id>
-R2_SECRET_ACCESS_KEY=<R2 secret access key>
+DEEPSKY_STORAGE_BACKEND=r2_worker
+R2_WORKER_URL=https://<your-worker>.<your-subdomain>.workers.dev
+R2_WORKER_TOKEN=<long random shared secret>
 DEEPSKY_STORAGE_PREFIX=railway
 ```
 
@@ -65,12 +63,72 @@ Create one R2 bucket and one R2 API token with object read/write access.
 Set these variables on both the web and worker services:
 
 ```text
+DEEPSKY_STORAGE_BACKEND=r2_worker
+R2_WORKER_URL=https://<your-worker>.<your-subdomain>.workers.dev
+R2_WORKER_TOKEN=<long random shared secret>
+DEEPSKY_STORAGE_PREFIX=railway
+```
+
+Railway can show TLS handshake failures when Python/boto3 talks directly to
+`*.r2.cloudflarestorage.com`. The `r2_worker` backend avoids that path: Railway
+talks to a small private Cloudflare Worker over normal HTTPS, and the Worker
+talks to R2 internally through a bucket binding.
+
+The direct S3-compatible backend is still available for environments where the
+R2 endpoint works:
+
+```text
 DEEPSKY_STORAGE_BACKEND=r2
 R2_BUCKET=<Cloudflare R2 bucket name>
 R2_ENDPOINT_URL=https://<account-id>.r2.cloudflarestorage.com
 R2_ACCESS_KEY_ID=<R2 access key id>
 R2_SECRET_ACCESS_KEY=<R2 secret access key>
 DEEPSKY_STORAGE_PREFIX=railway
+```
+
+Do not set `R2_ENDPOINT_URL` to a bucket path. It must be exactly the account
+endpoint, not `https://<account-id>.r2.cloudflarestorage.com/<bucket>`.
+
+### Cloudflare Worker R2 Bridge
+
+Create a Worker and use:
+
+```text
+deepsky_processor/deploy/cloudflare_r2_worker.js
+```
+
+Bind your R2 bucket to the Worker with this binding name:
+
+```text
+DEEPSKY_BUCKET
+```
+
+Add a Worker secret with the same value you put in Railway:
+
+```text
+DEEPSKY_STORAGE_TOKEN
+```
+
+Then set Railway web and worker services to:
+
+```text
+DEEPSKY_STORAGE_BACKEND=r2_worker
+R2_WORKER_URL=https://<your-worker>.<your-subdomain>.workers.dev
+R2_WORKER_TOKEN=<same value as DEEPSKY_STORAGE_TOKEN>
+DEEPSKY_STORAGE_PREFIX=railway
+```
+
+Verify from the Railway worker shell:
+
+```bash
+python -m deepsky_processor.web.storage --smoke-test
+```
+
+Expected:
+
+```text
+R2 smoke test: PASS
+R2 key: railway/_healthcheck.txt
 ```
 
 The web service writes objects like:
@@ -115,11 +173,9 @@ Set environment variables:
 ```text
 REDIS_URL=<Railway Redis private URL>
 DEEPSKY_QUEUE_NAME=deepsky
-DEEPSKY_STORAGE_BACKEND=r2
-R2_BUCKET=<Cloudflare R2 bucket name>
-R2_ENDPOINT_URL=https://<account-id>.r2.cloudflarestorage.com
-R2_ACCESS_KEY_ID=<R2 access key id>
-R2_SECRET_ACCESS_KEY=<R2 secret access key>
+DEEPSKY_STORAGE_BACKEND=r2_worker
+R2_WORKER_URL=https://<your-worker>.<your-subdomain>.workers.dev
+R2_WORKER_TOKEN=<long random shared secret>
 DEEPSKY_STORAGE_PREFIX=railway
 DEEPSKY_VERIFY_MODE=container
 DEEPSKY_REQUIRE_CUDA=0
