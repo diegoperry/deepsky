@@ -23,6 +23,7 @@ DEFAULT_REDIS_URL = "redis://redis:6379/0"
 
 def main() -> int:
     ensure_runtime_dependencies()
+    _verify_storage()
     command = sys.argv[1:] or [
         "rq",
         "worker",
@@ -42,6 +43,15 @@ def ensure_runtime_dependencies() -> None:
         _install_starnet(starnet_path)
     if scunet_path is not None and not scunet_path.exists():
         _install_scunet(scunet_path)
+
+
+def _verify_storage() -> None:
+    from deepsky_processor.web import storage
+
+    run_smoke = os.environ.get("DEEPSKY_STORAGE_SMOKE_ON_STARTUP", "0") == "1"
+    ok = storage.print_storage_doctor(run_smoke=run_smoke)
+    if storage.backend_name() == "r2" and not ok:
+        raise RuntimeError("R2 storage doctor failed; refusing to start worker.")
 
 
 def _install_starnet(starnet_path: Path) -> None:

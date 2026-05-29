@@ -4,11 +4,13 @@ ENV PYTHONUNBUFFERED=1
 ENV DEEPSKY_WEB_PROCESSOR=queue
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
     libglib2.0-0 \
     libgl1 \
     libtiff6 \
     libjpeg62-turbo \
     libpng16-16 \
+    && update-ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

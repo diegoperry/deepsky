@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
@@ -11,11 +13,21 @@ from fastapi.staticfiles import StaticFiles
 from deepsky_processor.web.image_processing import process_uploaded_image
 from deepsky_processor.web.job_queue import enqueue_uploaded_file, get_job_status, read_job_result
 from deepsky_processor.web.pipeline_worker import run_uploaded_file_pipeline
+from deepsky_processor.web.storage import print_storage_doctor
 
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
-app = FastAPI(title="DeepSky", version="0.1.0")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    if os.environ.get("DEEPSKY_STORAGE_DOCTOR_ON_STARTUP", "1") == "1":
+        run_smoke = os.environ.get("DEEPSKY_STORAGE_SMOKE_ON_STARTUP", "0") == "1"
+        print_storage_doctor(run_smoke=run_smoke)
+    yield
+
+
+app = FastAPI(title="DeepSky", version="0.1.0", lifespan=lifespan)
 
 
 @app.get("/api/health")

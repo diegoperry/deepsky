@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -122,6 +123,112 @@ def delete_prefix(prefix: str) -> None:
         shutil.rmtree(root, ignore_errors=True)
 
 
+def delete_object(key: str) -> None:
+    if backend_name() == "r2":
+        _s3().delete_object(Bucket=_bucket(), Key=key)
+        return
+
+    path = _local_path(key)
+    if path.exists():
+        path.unlink()
+
+
+def storage_diagnostics(run_smoke: bool = False) -> dict[str, Any]:
+    backend = backend_name()
+    result: dict[str, Any] = {
+        "backend": backend,
+        "ok": True,
+        "bucket": None,
+        "endpoint_host": None,
+        "list_test": "not applicable",
+        "head_test": "not applicable",
+        "smoke_test": "not run",
+        "error": None,
+    }
+
+    if backend != "r2":
+        result["local_root"] = str(LOCAL_STORAGE_ROOT)
+        return result
+
+    try:
+        endpoint_url = _endpoint_url()
+        client = _s3()
+        bucket = _bucket()
+        result["bucket"] = bucket
+        result["endpoint_host"] = urlparse(endpoint_url).netloc
+
+        prefix = object_prefix()
+        list_prefix = f"{prefix}/" if prefix else ""
+        client.list_objects_v2(Bucket=bucket, Prefix=list_prefix, MaxKeys=1)
+        result["list_test"] = "PASS"
+
+        client.head_bucket(Bucket=bucket)
+        result["head_test"] = "PASS"
+
+        if run_smoke:
+            smoke = r2_smoke_test(delete_after=True)
+            result["smoke_test"] = smoke["status"]
+            result["ok"] = smoke["ok"]
+            result["error"] = smoke["error"]
+    except Exception as exc:  # noqa: BLE001 - startup diagnostics should report all failures.
+        result["ok"] = False
+        result["error"] = f"{type(exc).__name__}: {exc}"
+
+    return result
+
+
+def print_storage_doctor(run_smoke: bool = False) -> bool:
+    result = storage_diagnostics(run_smoke=run_smoke)
+    print("DeepSky storage doctor")
+    print("======================")
+    print(f"Storage backend: {result['backend']}")
+    if result["backend"] == "r2":
+        print(f"R2 bucket: {result.get('bucket') or '<not configured>'}")
+        print(f"R2 endpoint host: {result.get('endpoint_host') or '<not configured>'}")
+        print(f"R2 list test: {result['list_test']}")
+        print(f"R2 head test: {result['head_test']}")
+        print(f"R2 smoke test: {result['smoke_test']}")
+    else:
+        print(f"Local storage root: {result.get('local_root')}")
+
+    if result["ok"]:
+        print("Storage status: PASS")
+    else:
+        print("Storage status: FAIL")
+        print(f"Storage error: {result['error']}")
+    return bool(result["ok"])
+
+
+def r2_smoke_test(delete_after: bool = True) -> dict[str, Any]:
+    if backend_name() != "r2":
+        return {
+            "ok": False,
+            "status": "FAIL",
+            "key": None,
+            "error": "R2 smoke test requires DEEPSKY_STORAGE_BACKEND=r2",
+        }
+
+    key = "/".join(segment for segment in (object_prefix(), "_healthcheck.txt") if segment)
+    payload = b"deepsky-r2-healthcheck\n"
+    try:
+        upload_bytes(key, payload, content_type="text/plain")
+        _s3().head_object(Bucket=_bucket(), Key=key)
+        downloaded = read_bytes(key)
+        if downloaded != payload:
+            raise RuntimeError("R2 smoke test read-back content did not match")
+        if delete_after:
+            delete_object(key)
+    except Exception as exc:  # noqa: BLE001 - smoke tests should return clear failures.
+        return {
+            "ok": False,
+            "status": "FAIL",
+            "key": key,
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+
+    return {"ok": True, "status": "PASS", "key": key, "error": None}
+
+
 def _local_path(key: str) -> Path:
     root = LOCAL_STORAGE_ROOT.resolve()
     path = (root / key).resolve()
@@ -133,15 +240,20 @@ def _local_path(key: str) -> Path:
 def _s3():
     try:
         import boto3
+        from botocore.config import Config
     except ImportError as exc:
         raise RuntimeError("R2 storage requires boto3. Add boto3 to requirements.") from exc
 
     return boto3.client(
         "s3",
-        endpoint_url=_required_env("R2_ENDPOINT_URL"),
+        endpoint_url=_endpoint_url(),
         aws_access_key_id=_required_env("R2_ACCESS_KEY_ID"),
         aws_secret_access_key=_required_env("R2_SECRET_ACCESS_KEY"),
-        region_name=os.environ.get("R2_REGION", "auto"),
+        region_name="auto",
+        config=Config(
+            signature_version="s3v4",
+            s3={"addressing_style": "path"},
+        ),
     )
 
 
@@ -149,8 +261,26 @@ def _bucket() -> str:
     return _required_env("R2_BUCKET")
 
 
+def _endpoint_url() -> str:
+    endpoint_url = _required_env("R2_ENDPOINT_URL")
+    parsed = urlparse(endpoint_url)
+    if not parsed.scheme or not parsed.netloc:
+        raise RuntimeError(
+            "R2_ENDPOINT_URL must be the Cloudflare account endpoint, "
+            "for example https://<account-id>.r2.cloudflarestorage.com"
+        )
+    if parsed.path not in {"", "/"}:
+        raise RuntimeError(
+            "R2_ENDPOINT_URL must not include a bucket or path. Use "
+            "https://<account-id>.r2.cloudflarestorage.com and set the "
+            "bucket only in R2_BUCKET."
+        )
+    return endpoint_url
+
+
 def _required_env(name: str) -> str:
     value = os.environ.get(name)
+    value = value.strip() if value else ""
     if not value:
         raise RuntimeError(f"{name} is required for R2 storage")
     return value
@@ -160,3 +290,26 @@ def _is_not_found(exc: Exception) -> bool:
     response = getattr(exc, "response", {})
     code = str(response.get("Error", {}).get("Code", ""))
     return code in {"404", "NoSuchKey", "NotFound"}
+
+
+def main() -> int:
+    import argparse
+
+    parser = argparse.ArgumentParser(description="DeepSky storage diagnostics")
+    parser.add_argument("--smoke-test", action="store_true", help="write/read an R2 healthcheck object")
+    parser.add_argument("--keep-healthcheck", action="store_true", help="leave the healthcheck object in R2")
+    args = parser.parse_args()
+
+    if args.smoke_test:
+        result = r2_smoke_test(delete_after=not args.keep_healthcheck)
+        print(f"R2 smoke test: {result['status']}")
+        print(f"R2 key: {result['key']}")
+        if result["error"]:
+            print(f"R2 error: {result['error']}")
+        return 0 if result["ok"] else 1
+
+    return 0 if print_storage_doctor(run_smoke=False) else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
