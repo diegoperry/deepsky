@@ -53,4 +53,6 @@ RUN python -m pip install --no-cache-dir \
     torch torchvision torchaudio \
     --index-url https://download.pytorch.org/whl/cpu
 
+COPY deepsky_processor /app/deepsky_processor
+
 CMD ["python", "-m", "deepsky_processor.pipeline.main_pipeline", "--doctor", "--mode", "container"]

@@ -58,6 +58,12 @@ Refreshing the browser removes the in-browser preview URL. Server-side temporary
 
 For a public deployment, put a reverse proxy such as Caddy, Nginx, or a managed load balancer in front of the `web` service for HTTPS.
 
+For Railway, use the dedicated guide:
+
+```text
+deepsky_processor/docs/RAILWAY_DEPLOYMENT.md
+```
+
 Keep upload limits explicit at the proxy and app level. DeepSky currently targets single FITS/TIFF uploads, not multi-frame calibration sets in the web UI.
 
 For GPU workers, build from `Dockerfile.worker.cuda`, run on a host with NVIDIA Container Toolkit, and set:
