@@ -7,7 +7,8 @@ DeepSky can run on Railway as three services:
 - `worker`: Linux processing worker with Siril, StarNet++, SCUNet, and OpenCV.
 
 Do not deploy only the web service. The web service queues work; the worker does
-the real astrophotography processing.
+the real astrophotography processing. Redis is only the job queue; uploaded
+files, status documents, and final results are shared through Cloudflare R2.
 
 ## Why The Worker Needs A Runtime Volume
 
@@ -42,6 +43,12 @@ DEEPSKY_WEB_PROCESSOR=queue
 REDIS_URL=<Railway Redis private URL>
 DEEPSKY_QUEUE_NAME=deepsky
 DEEPSKY_WEB_JOB_MAX_AGE_SECONDS=3600
+DEEPSKY_STORAGE_BACKEND=r2
+R2_BUCKET=<Cloudflare R2 bucket name>
+R2_ENDPOINT_URL=https://<account-id>.r2.cloudflarestorage.com
+R2_ACCESS_KEY_ID=<R2 access key id>
+R2_SECRET_ACCESS_KEY=<R2 secret access key>
+DEEPSKY_STORAGE_PREFIX=railway
 ```
 
 Railway provides `PORT` automatically. `Dockerfile.web` listens on that value.
@@ -50,6 +57,42 @@ Railway provides `PORT` automatically. `Dockerfile.web` listens on that value.
 
 Add Railway Redis to the project. Copy its private `REDIS_URL` into both the web
 and worker services.
+
+## Cloudflare R2 Storage
+
+Create one R2 bucket and one R2 API token with object read/write access.
+
+Set these variables on both the web and worker services:
+
+```text
+DEEPSKY_STORAGE_BACKEND=r2
+R2_BUCKET=<Cloudflare R2 bucket name>
+R2_ENDPOINT_URL=https://<account-id>.r2.cloudflarestorage.com
+R2_ACCESS_KEY_ID=<R2 access key id>
+R2_SECRET_ACCESS_KEY=<R2 secret access key>
+DEEPSKY_STORAGE_PREFIX=railway
+```
+
+The web service writes objects like:
+
+```text
+railway/web-<job_id>/input/<filename>
+railway/web-<job_id>/metadata.json
+railway/web-<job_id>/status.json
+```
+
+The queued Redis job contains only the job id and object keys. The worker
+downloads those objects into a temporary local directory, processes locally, and
+uploads:
+
+```text
+railway/web-<job_id>/output/final.png
+railway/web-<job_id>/status.json
+```
+
+The web status and result endpoints read from R2, not from the web container
+filesystem. Do not rely on `/app/deepsky_processor/jobs` being shared between
+Railway services.
 
 ## Worker Service
 
@@ -72,11 +115,18 @@ Set environment variables:
 ```text
 REDIS_URL=<Railway Redis private URL>
 DEEPSKY_QUEUE_NAME=deepsky
+DEEPSKY_STORAGE_BACKEND=r2
+R2_BUCKET=<Cloudflare R2 bucket name>
+R2_ENDPOINT_URL=https://<account-id>.r2.cloudflarestorage.com
+R2_ACCESS_KEY_ID=<R2 access key id>
+R2_SECRET_ACCESS_KEY=<R2 secret access key>
+DEEPSKY_STORAGE_PREFIX=railway
 DEEPSKY_VERIFY_MODE=container
 DEEPSKY_REQUIRE_CUDA=0
 USE_XVFB=1
 STARNET_PATH=/app/runtime/tools/StarNet/starnet++
 STARNET_ARGS={input} {output} 256
+LD_LIBRARY_PATH=/app/runtime/tools/StarNet
 SCUNET_MODEL_PATH=/app/runtime/models/SCUNet/scunet_color_real_gan.pth
 SCUNET_MODEL_TYPE=official
 SCUNET_DEVICE=cpu

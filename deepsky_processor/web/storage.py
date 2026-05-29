@@ -1,0 +1,162 @@
+"""Shared web job storage for local development and Cloudflare R2."""
+
+from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+from typing import Any
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+LOCAL_STORAGE_ROOT = Path(
+    os.environ.get(
+        "DEEPSKY_LOCAL_STORAGE_ROOT",
+        str(PROJECT_ROOT / "deepsky_processor" / "jobs" / "web-requests"),
+    )
+)
+
+
+def backend_name() -> str:
+    configured = os.environ.get("DEEPSKY_STORAGE_BACKEND")
+    if configured:
+        return configured.lower()
+    if os.environ.get("R2_BUCKET") and os.environ.get("R2_ENDPOINT_URL"):
+        return "r2"
+    return "local"
+
+
+def object_prefix() -> str:
+    return os.environ.get("DEEPSKY_STORAGE_PREFIX", "").strip("/")
+
+
+def job_key(job_id: str, *parts: str) -> str:
+    if not job_id.startswith("web-") or any(char in job_id for char in "/\\"):
+        raise FileNotFoundError(f"Invalid job id: {job_id}")
+    segments = [segment.strip("/") for segment in (object_prefix(), job_id, *parts) if segment]
+    return "/".join(segments)
+
+
+def upload_bytes(key: str, content: bytes, content_type: str | None = None) -> None:
+    if backend_name() == "r2":
+        extra_args = {"ContentType": content_type} if content_type else None
+        kwargs = {"Bucket": _bucket(), "Key": key, "Body": content}
+        if extra_args:
+            kwargs["ContentType"] = extra_args["ContentType"]
+        _s3().put_object(**kwargs)
+        return
+
+    path = _local_path(key)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(content)
+
+
+def upload_file(key: str, source_path: Path, content_type: str | None = None) -> None:
+    if backend_name() == "r2":
+        extra_args = {"ContentType": content_type} if content_type else None
+        if extra_args:
+            _s3().upload_file(str(source_path), _bucket(), key, ExtraArgs=extra_args)
+        else:
+            _s3().upload_file(str(source_path), _bucket(), key)
+        return
+
+    path = _local_path(key)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(source_path.read_bytes())
+
+
+def download_file(key: str, destination_path: Path) -> None:
+    destination_path.parent.mkdir(parents=True, exist_ok=True)
+    if backend_name() == "r2":
+        _s3().download_file(_bucket(), key, str(destination_path))
+        return
+    destination_path.write_bytes(_local_path(key).read_bytes())
+
+
+def read_bytes(key: str) -> bytes:
+    if backend_name() == "r2":
+        return _s3().get_object(Bucket=_bucket(), Key=key)["Body"].read()
+    return _local_path(key).read_bytes()
+
+
+def write_json(key: str, value: dict[str, Any]) -> None:
+    upload_bytes(
+        key,
+        json.dumps(value, indent=2, sort_keys=True).encode("utf-8"),
+        content_type="application/json",
+    )
+
+
+def read_json(key: str) -> dict[str, Any]:
+    return json.loads(read_bytes(key).decode("utf-8"))
+
+
+def exists(key: str) -> bool:
+    if backend_name() == "r2":
+        try:
+            _s3().head_object(Bucket=_bucket(), Key=key)
+        except Exception as exc:  # noqa: BLE001 - boto3 raises generated client errors.
+            if _is_not_found(exc):
+                return False
+            raise
+        return True
+    return _local_path(key).is_file()
+
+
+def delete_prefix(prefix: str) -> None:
+    prefix = prefix.strip("/")
+    if backend_name() == "r2":
+        client = _s3()
+        bucket = _bucket()
+        paginator = client.get_paginator("list_objects_v2")
+        for page in paginator.paginate(Bucket=bucket, Prefix=f"{prefix}/"):
+            objects = [{"Key": item["Key"]} for item in page.get("Contents", [])]
+            if objects:
+                client.delete_objects(Bucket=bucket, Delete={"Objects": objects})
+        return
+
+    root = _local_path(prefix)
+    if root.is_dir():
+        import shutil
+
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def _local_path(key: str) -> Path:
+    root = LOCAL_STORAGE_ROOT.resolve()
+    path = (root / key).resolve()
+    if root != path and root not in path.parents:
+        raise ValueError(f"Refusing to access storage path outside root: {key}")
+    return path
+
+
+def _s3():
+    try:
+        import boto3
+    except ImportError as exc:
+        raise RuntimeError("R2 storage requires boto3. Add boto3 to requirements.") from exc
+
+    return boto3.client(
+        "s3",
+        endpoint_url=_required_env("R2_ENDPOINT_URL"),
+        aws_access_key_id=_required_env("R2_ACCESS_KEY_ID"),
+        aws_secret_access_key=_required_env("R2_SECRET_ACCESS_KEY"),
+        region_name=os.environ.get("R2_REGION", "auto"),
+    )
+
+
+def _bucket() -> str:
+    return _required_env("R2_BUCKET")
+
+
+def _required_env(name: str) -> str:
+    value = os.environ.get(name)
+    if not value:
+        raise RuntimeError(f"{name} is required for R2 storage")
+    return value
+
+
+def _is_not_found(exc: Exception) -> bool:
+    response = getattr(exc, "response", {})
+    code = str(response.get("Error", {}).get("Code", ""))
+    return code in {"404", "NoSuchKey", "NotFound"}

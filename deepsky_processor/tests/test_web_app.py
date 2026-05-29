@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 import deepsky_processor.web.app as web_app
 import deepsky_processor.web.job_queue as job_queue
 import deepsky_processor.web.pipeline_worker as pipeline_worker
+import deepsky_processor.web.storage as storage
 from deepsky_processor.web.app import app
 from deepsky_processor.web.image_processing import process_uploaded_image
 from deepsky_processor.web.pipeline_worker import WebPipelineResult
@@ -176,6 +177,10 @@ def test_enqueue_uploaded_file_writes_temp_job_and_enqueues(monkeypatch, tmp_pat
 
     calls = {}
     monkeypatch.setattr(job_queue, "WEB_JOBS_ROOT", tmp_path)
+    monkeypatch.setattr(storage, "LOCAL_STORAGE_ROOT", tmp_path)
+    monkeypatch.delenv("DEEPSKY_STORAGE_BACKEND", raising=False)
+    monkeypatch.delenv("R2_BUCKET", raising=False)
+    monkeypatch.delenv("R2_ENDPOINT_URL", raising=False)
     monkeypatch.setattr(job_queue, "_get_queue", lambda: FakeQueue())
 
     import anyio
@@ -185,9 +190,64 @@ def test_enqueue_uploaded_file_writes_temp_job_and_enqueues(monkeypatch, tmp_pat
     assert status["status"] == "queued"
     assert status["job_id"].startswith("web-")
     assert calls["func"] is job_queue.process_queued_job
-    input_path = calls["args"][1]
-    assert input_path.endswith("galaxy.fit")
+    payload = calls["args"][1]
+    assert payload["input_key"].endswith("/input/galaxy.fit")
+    assert payload["status_key"].endswith("/status.json")
+    assert payload["metadata_key"].endswith("/metadata.json")
     assert (tmp_path / status["job_id"] / "input" / "galaxy.fit").is_file()
+    assert (tmp_path / status["job_id"] / "status.json").is_file()
+    assert (tmp_path / status["job_id"] / "metadata.json").is_file()
+
+
+def test_storage_backed_worker_uses_temp_paths_and_uploads_result(monkeypatch, tmp_path) -> None:
+    job_id = "web-123"
+    status_key = storage.job_key(job_id, "status.json")
+    input_key = storage.job_key(job_id, "input", "galaxy.fit")
+    result_key = storage.job_key(job_id, "output", "final.png")
+    metadata_key = storage.job_key(job_id, "metadata.json")
+
+    monkeypatch.setattr(storage, "LOCAL_STORAGE_ROOT", tmp_path)
+    monkeypatch.delenv("DEEPSKY_STORAGE_BACKEND", raising=False)
+    monkeypatch.delenv("R2_BUCKET", raising=False)
+    monkeypatch.delenv("R2_ENDPOINT_URL", raising=False)
+    storage.upload_bytes(input_key, b"fits")
+    storage.write_json(metadata_key, {"job_id": job_id, "filename": "galaxy.fit"})
+    storage.write_json(
+        status_key,
+        {
+            "job_id": job_id,
+            "status": "queued",
+            "progress": 3,
+            "step": "Upload received",
+            "result_key": result_key,
+            "error": None,
+        },
+    )
+
+    def fake_run_pipeline(input_path, output_dir, status_path):
+        assert input_path.name == "galaxy.fit"
+        assert input_path.read_bytes() == b"fits"
+        assert status_path == status_key
+        output_dir.mkdir(parents=True, exist_ok=True)
+        (output_dir / "final.png").write_bytes(b"\x89PNG final")
+
+    monkeypatch.setattr(job_queue, "_run_pipeline_process_for_status_key", fake_run_pipeline)
+
+    job_queue.process_queued_job(
+        job_id,
+        {
+            "input_key": input_key,
+            "status_key": status_key,
+            "metadata_key": metadata_key,
+            "result_key": result_key,
+            "filename": "galaxy.fit",
+        },
+    )
+
+    status = storage.read_json(status_key)
+    assert status["status"] == "finished"
+    assert status["progress"] == 100
+    assert job_queue.read_job_result(job_id) == b"\x89PNG final"
 
 
 def test_worker_command_uses_container_paths(monkeypatch, tmp_path) -> None:

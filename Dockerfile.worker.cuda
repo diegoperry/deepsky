@@ -39,13 +39,20 @@ RUN python3 -m venv /opt/deepsky-venv
 ENV PATH="/opt/deepsky-venv/bin:${PATH}"
 RUN python -m pip install --no-cache-dir \
     numpy \
+    boto3 \
     onnxruntime-gpu \
     einops \
     opencv-python-headless \
+    fastapi \
+    python-multipart \
     pytest \
+    redis \
+    rq \
     timm
 RUN python -m pip install --no-cache-dir \
     torch torchvision torchaudio \
     --index-url https://download.pytorch.org/whl/cu121
+
+COPY deepsky_processor /app/deepsky_processor
 
 CMD ["python", "-m", "deepsky_processor.pipeline.main_pipeline", "--doctor", "--mode", "container"]

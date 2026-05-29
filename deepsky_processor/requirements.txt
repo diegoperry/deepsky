@@ -1,4 +1,5 @@
 numpy
+boto3
 onnxruntime
 opencv-python
 einops
